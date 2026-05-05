@@ -1,5 +1,6 @@
 .pio
 .idea
-include
+include/README
+include/config.h
 test
 lib
