@@ -20,7 +20,7 @@ AsyncWebServer server(80);
 // BLE 状态标志
 static boolean doConnect = false;
 static boolean connected = false;
-static boolean doScan = false; // 用于断线重连扫描控制
+static boolean doScan = true; // 用于断线重连扫描控制
 static BLERemoteCharacteristic* pRemoteCharacteristic;
 static BLEAdvertisedDevice* myDevice;
 
@@ -138,8 +138,8 @@ void setup() {
 
     BLEScan* pBLEScan = BLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-    pBLEScan->setInterval(1349);
-    pBLEScan->setWindow(449);
+    pBLEScan->setInterval(100);
+    pBLEScan->setWindow(99);
     pBLEScan->setActiveScan(true);
     Serial.println("📡 开启全频段扫描，寻找 ZZK 开关...");
     pBLEScan->start(5, false); // 扫描持续 5 秒
