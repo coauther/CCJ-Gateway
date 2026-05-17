@@ -24,13 +24,36 @@ const char index_html[] PROGMEM = R"rawliteral(
         .toggle-btn.active { background-color: #FF9500; color: #FFFFFF; box-shadow: 0 8px 20px rgba(255, 149, 0, 0.3); }
         .power-icon { width: 18px; height: 18px; border: 2px solid currentColor; border-radius: 50%; border-top-color: transparent; position: relative; transform: rotate(45deg); }
         .power-icon::before { content: ''; position: absolute; width: 2px; height: 10px; background-color: currentColor; top: -4px; left: 6px; transform: rotate(-45deg); }
+
+        /* 电池 UI 样式 */
+        .battery-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+            background: white;
+            padding: 8px 12px;
+            border-radius: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
     </style>
 </head>
 <body>
+
     <div class="header">
         <h1>CCJ Gateway</h1>
         <p>局域网直连控制中心</p>
     </div>
+
+    <div class="battery-container">
+    🔋 <span id="bat-level">--</span>%
+    </div>
+
     <div class="card">
         <div class="status-dot"></div>
         <h2 class="title">客厅主照明</h2>
@@ -61,6 +84,15 @@ const char index_html[] PROGMEM = R"rawliteral(
                         }
                     } else alert("网关执行失败！");
                 }).catch(err => alert("网络请求失败，请检查 WiFi 连接！"));
+        }
+
+        // 🚀 核心新增：监听 ESP32 推送的电池事件
+        if (!!window.EventSource) {
+        var source = new EventSource('/events');
+        source.addEventListener('battery', function(e) {
+            console.log("收到电量更新: ", e.data);
+            document.getElementById('bat-level').innerText = e.data;
+        }, false);
         }
     </script>
 </body>

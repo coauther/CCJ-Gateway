@@ -13,15 +13,20 @@ const char* password = WIFI_PASSWORD;
 // ZZK 的目标 UUID
 static BLEUUID serviceUUID("2d220000-516b-47bd-a33b-2c93889ac9b7");
 static BLEUUID charUUID("2d220001-516b-47bd-a33b-2c93889ac9b7");
+static BLEUUID batteryCharUUID("2d220002-516b-47bd-a33b-2c93889ac9b7"); // 新增电池特征值
 
 // ================= 全局对象 =================
 AsyncWebServer server(80);
+AsyncEventSource events("/events"); // 新增 SSE 事件源，用于向网页实时推送电量
 
 // BLE 状态标志
 static boolean doConnect = false;
 static boolean connected = false;
 static boolean doScan = true; // 用于断线重连扫描控制
-static BLERemoteCharacteristic* pRemoteCharacteristic;
+
+// 特征值指针与设备指针
+static BLERemoteCharacteristic* pRemoteCharacteristic; // 开关控制指针
+static BLERemoteCharacteristic* pBatteryCharacteristic; // 电池电量指针
 static BLEAdvertisedDevice* myDevice;
 
 // Web 与 BLE 之间的通信桥梁（-1 代表无动作，0 关灯，1 开灯）
@@ -38,6 +43,18 @@ class MyClientCallback : public BLEClientCallbacks {
     Serial.println("<<< 与 ZZK 断开连接，准备重新扫描...");
   }
 };
+
+// ================= BLE 电池 Notify 回调函数 =================
+// 当墙上的 ZZK 电量发生变化并推送时，会瞬间触发这里
+static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+    if (length > 0) {
+        uint8_t batteryLevel = pData[0];
+        Serial.printf("🔋 收到 ZZK 电量推送: %d%%\n", batteryLevel);
+
+        // 将电量数字转换为字符串，并通过 SSE 推送给所有连着网关的手机网页
+        events.send(String(batteryLevel).c_str(), "battery", millis());
+    }
+}
 
 // ================= BLE 雷达扫描回调 =================
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
@@ -74,8 +91,11 @@ void setupWebServer() {
         }
     });
 
+    // 🚀 核心新增：将事件流挂载到异步服务器上
+    server.addHandler(&events);
+
     server.begin();
-    Serial.println("🌐 异步 Web 服务器已在 80 端口启动");
+    Serial.println("🌐 异步 Web 服务器已在 80 端口启动，SSE 事件流准备就绪");
 }
 
 // ================= 深入连接并获取特征值逻辑 =================
@@ -106,9 +126,19 @@ bool connectToServer() {
         return false;
     }
 
-    // 4. 确认权限
-    if(pRemoteCharacteristic->canWrite()) {
-        Serial.println("✅ 特征值写权限已确认，通道全面就绪！等待网页指令...");
+    // 4. 🚀 核心新增：获取并绑定“电池”特征值
+    pBatteryCharacteristic = pRemoteService->getCharacteristic(batteryCharUUID);
+    if (pBatteryCharacteristic != nullptr) {
+        // 如果具有 Notify 权限，则注册上面写好的回调函数
+        if (pBatteryCharacteristic->canNotify()) {
+            pBatteryCharacteristic->registerForNotify(notifyCallback);
+            Serial.println("✅ 电池监听通道就绪！");
+        }
+        // 为了防止网页刚打开时没数据，主动读取一次当前电量并推送
+        if (pBatteryCharacteristic->canRead()) {
+            uint8_t currentBat = pBatteryCharacteristic->readUInt8();
+            events.send(String(currentBat).c_str(), "battery", millis());
+        }
     }
 
     connected = true;
