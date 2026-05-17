@@ -3,6 +3,8 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <BLEDevice.h>
+#include <Preferences.h>
+#include <ArduinoJson.h>
 #include "html_page.h"
 #include "config.h"
 
@@ -17,7 +19,10 @@ static BLEUUID batteryCharUUID("2d220002-516b-47bd-a33b-2c93889ac9b7"); // 新�
 
 // ================= 全局对象 =================
 AsyncWebServer server(80);
+Preferences preferences; // Flash 记忆体对象
 AsyncEventSource events("/events"); // 新增 SSE 事件源，用于向网页实时推送电量
+
+String targetMacAddress = ""; // 当前绑定的目标 MAC 地址
 
 // BLE 状态标志
 static boolean doConnect = false;
@@ -31,6 +36,8 @@ static BLEAdvertisedDevice* myDevice;
 
 // Web 与 BLE 之间的通信桥梁（-1 代表无动作，0 关灯，1 开灯）
 volatile int pendingAction = -1;
+// 添加一个专门存电量的变量
+volatile int zzkBattery = -1; // -1 表示尚未获取到有效电量
 
 // ================= BLE 客户端连接状态回调 =================
 class MyClientCallback : public BLEClientCallbacks {
@@ -49,20 +56,24 @@ class MyClientCallback : public BLEClientCallbacks {
 static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
     if (length > 0) {
         uint8_t batteryLevel = pData[0];
-        Serial.printf("🔋 收到 ZZK 电量推送: %d%%\n", batteryLevel);
+
+        // 更新全局电量变量，给上面的 /battery 路由备用
+        zzkBattery = batteryLevel;
+
+        Serial.printf("🔋 收到 ZZK 电量推送: %d%%\n", zzkBattery);
 
         // 将电量数字转换为字符串，并通过 SSE 推送给所有连着网关的手机网页
         events.send(String(batteryLevel).c_str(), "battery", millis());
     }
 }
 
-// ================= BLE 雷达扫描回调 =================
+// ================= BLE 雷达扫描回调 (平时重连用) =================
 class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
   // 当扫描到任何蓝牙设备时，会触发此回调
   void onResult(BLEAdvertisedDevice advertisedDevice) {
     // 检查该设备是否广播了我们专属的 ZZK 服务 UUID
     if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(serviceUUID)) {
-      BLEDevice::getScan()->stop(); // 命中目标！立刻停止雷达扫描以节省资源
+      BLEDevice::getScan()->stop(); // 扫到专属目标！立刻停止雷达扫描以节省资源
 
       // 保存找到的设备信息，留给主循环去发起连接
       myDevice = new BLEAdvertisedDevice(advertisedDevice);
@@ -75,12 +86,12 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 
 // ================= Web 服务器初始化 =================
 void setupWebServer() {
-    // 根目录：吐出 HTML 页面
+    // 1. 根目录：吐出 HTML 前端主网页
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
         request->send_P(200, "text/html", index_html);
     });
 
-    // 接收控制指令的 API 接口
+    // 2. 接收控制开关动作指令的 API 接口
     server.on("/control", HTTP_GET, [](AsyncWebServerRequest *request){
         if (request->hasParam("action")) {
             String action = request->getParam("action")->value();
@@ -91,11 +102,81 @@ void setupWebServer() {
         }
     });
 
-    // 🚀 核心新增：将事件流挂载到异步服务器上
-    server.addHandler(&events);
+    // 3. 核心 API：触发雷达扫描并返回 JSON 列表
+    server.on("/scan", HTTP_GET, [](AsyncWebServerRequest *request){
+    Serial.println("📡 网页触发周边 ZZK 设备扫描...");
 
-    server.begin();
-    Serial.println("🌐 异步 Web 服务器已在 80 端口启动，SSE 事件流准备就绪");
+    BLEScan* pBLEScan = BLEDevice::getScan();
+    //【修复3】强制停止后台可能正在运行的扫描，防止撞车
+    pBLEScan->stop();
+    pBLEScan->clearResults();
+
+    // 阻塞式扫描 3 秒钟（由于是配置阶段，短时间阻塞可接受）
+    BLEScanResults foundDevices = pBLEScan->start(3, false);
+
+    JsonDocument doc; // 创建 JSON 文档
+    JsonArray array = doc.to<JsonArray>();
+
+    for(int i = 0; i < foundDevices.getCount(); i++) {
+      BLEAdvertisedDevice dev = foundDevices.getDevice(i);
+
+        // 1. 严格检查真实名字匹配
+        bool nameMatch = false;
+        if (dev.haveName()) {
+          String actualName = dev.getName().c_str();
+          actualName.toUpperCase(); // 转为大写比对，防止大小写干扰
+          if (actualName.indexOf("ZZK") >= 0) {
+            nameMatch = true;
+          }
+        }
+
+        // 2. 严格检查底层协议 UUID 匹配
+        bool uuidMatch = (dev.haveServiceUUID() && dev.isAdvertisingService(serviceUUID));
+
+        // 3. 只有真实名字匹配，或者 UUID 匹配，才允许放行！
+        if (nameMatch || uuidMatch) {
+          JsonObject obj = array.add<JsonObject>();
+          // 发给网页时，如果有真名就用真名，没真名说明它是靠 UUID 匹配进来的设备
+          obj["name"] = dev.haveName() ? dev.getName().c_str() : "ZZK_Switch (未命名)";
+          obj["mac"] = dev.getAddress().toString().c_str();
+          obj["rssi"] = dev.getRSSI();
+        }
+    }
+
+        pBLEScan->clearResults(); // 释放内存
+    String response;
+    serializeJson(doc, response); // 打包成 JSON 字符串
+    request->send(200, "application/json", response);
+  });
+
+    // 4. 核心 API：接收网页选中的 MAC 地址并永久绑定
+    server.on("/bind", HTTP_GET, [](AsyncWebServerRequest *request){
+      if(request->hasParam("mac")) {
+        String mac = request->getParam("mac")->value();
+        Serial.printf("🔗 网页请求绑定新设备 MAC: %s\n", mac.c_str());
+
+        // 写入内部 Flash 永久记忆
+        preferences.putString("target_mac", mac);
+        targetMacAddress = mac; // 更新当前运行时的目标
+
+        // 如果当前连着旧设备，立刻断开
+        if (connected) {
+           BLEDevice::createClient()->disconnect();
+        }
+
+        request->send(200, "text/plain", "Bind Success");
+      } else {
+        request->send(400, "text/plain", "Missing MAC");
+      }
+    });
+
+    server.on("/battery", HTTP_GET, [](AsyncWebServerRequest *request){
+        if (zzkBattery != -1) {
+            request->send(200, "text/plain", String(zzkBattery));
+        } else {
+            request->send(200, "text/plain", "Waiting...");
+        }
+    });
 }
 
 // ================= 深入连接并获取特征值逻辑 =================
@@ -104,13 +185,11 @@ bool connectToServer() {
     BLEClient* pClient = BLEDevice::createClient();
     pClient->setClientCallbacks(new MyClientCallback());
 
-    // 1. 发起实际的蓝牙连接
     if (!pClient->connect(myDevice)) {
         Serial.println("连接失败！");
         return false;
     }
 
-    // 2. 潜入“文件柜”，寻找指定的“服务（Service）”
     BLERemoteService* pRemoteService = pClient->getService(serviceUUID);
     if (pRemoteService == nullptr) {
         Serial.println("❌ 找不到目标服务 UUID，设备可能被串改！");
@@ -118,7 +197,6 @@ bool connectToServer() {
         return false;
     }
 
-    // 3. 翻开“抽屉”，寻找控制开灯的“表格（Characteristic）”
     pRemoteCharacteristic = pRemoteService->getCharacteristic(charUUID);
     if (pRemoteCharacteristic == nullptr) {
         Serial.println("❌ 找不到目标特征值 UUID！");
@@ -126,17 +204,15 @@ bool connectToServer() {
         return false;
     }
 
-    // 4. 🚀 核心新增：获取并绑定“电池”特征值
     pBatteryCharacteristic = pRemoteService->getCharacteristic(batteryCharUUID);
     if (pBatteryCharacteristic != nullptr) {
-        // 如果具有 Notify 权限，则注册上面写好的回调函数
         if (pBatteryCharacteristic->canNotify()) {
             pBatteryCharacteristic->registerForNotify(notifyCallback);
             Serial.println("✅ 电池监听通道就绪！");
         }
-        // 为了防止网页刚打开时没数据，主动读取一次当前电量并推送
         if (pBatteryCharacteristic->canRead()) {
             uint8_t currentBat = pBatteryCharacteristic->readUInt8();
+            zzkBattery = currentBat;
             events.send(String(currentBat).c_str(), "battery", millis());
         }
     }
@@ -147,10 +223,21 @@ bool connectToServer() {
 
 // ================= 系统初始化 =================
 void setup() {
+    server.addHandler(&events);
     Serial.begin(115200);
     Serial.println("🚀 CCJ Gateway 启动中...");
 
-    // 1. 连接 WiFi
+    // 1. 初始化 Flash 记忆体并读取绑定的 MAC
+    preferences.begin("zzk-app", false);
+    targetMacAddress = preferences.getString("target_mac", "");
+
+    if(targetMacAddress == "") {
+        Serial.println("⚠️ 当前未绑定任何 ZZK 设备，请通过网页扫描绑定！");
+    } else {
+        Serial.printf("🎯 从记忆中读取到绑定的目标 MAC: %s\n", targetMacAddress.c_str());
+    }
+
+    // 2. 连接 WiFi
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
     Serial.print("正在连接 WiFi");
@@ -160,19 +247,17 @@ void setup() {
     Serial.println("\n✅ WiFi 连接成功！请在浏览器中访问以下 IP 地址：");
     Serial.println(WiFi.localIP());
 
-    // 2. 启动异步网页服务器
-    setupWebServer();
-
     // 3. 初始化蓝牙引擎并开启雷达扫描
     BLEDevice::init("CCJ_Gateway_Central");
-
     BLEScan* pBLEScan = BLEDevice::getScan();
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+    pBLEScan->setActiveScan(true);
     pBLEScan->setInterval(100);
     pBLEScan->setWindow(99);
-    pBLEScan->setActiveScan(true);
-    Serial.println("📡 开启全频段扫描，寻找 ZZK 开关...");
-    pBLEScan->start(5, false); // 扫描持续 5 秒
+
+    // 4. 启动异步网页服务器
+    setupWebServer();
+    server.begin();
 }
 
 // ================= 主循环 =================
@@ -191,9 +276,8 @@ void loop() {
     }
 
     // 3. 跨线程安全处理：网页发来了按键动作
-    if (pendingAction != -1) {
-        uint8_t valueToSend = (uint8_t)pendingAction;
-
+    if (pendingAction != -1 && connected) {
+        uint8_t valueToSend = (pendingAction == 1) ? 0x01 : 0x00;
         // 必须确保蓝牙底层处于已连接状态，且指针未悬空
         if (connected && pRemoteCharacteristic != nullptr) {
             pRemoteCharacteristic->writeValue(&valueToSend, 1);
@@ -206,5 +290,5 @@ void loop() {
         pendingAction = -1;
     }
 
-    delay(20); // 喂狗，避免 RTOS 任务榨干 CPU
+    delay(50); // 喂狗，避免 RTOS 任务榨干 CPU
 }
