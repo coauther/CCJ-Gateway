@@ -5,12 +5,14 @@
 #include <BLEDevice.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <ctype.h>
 #include "html_page.h"
 #include "config.h"
 
 // ================= 配置区 =================
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_PASSWORD;
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
 
 // ZZK 的目标 UUID
 static BLEUUID serviceUUID("2d220000-516b-47bd-a33b-2c93889ac9b7");
@@ -27,12 +29,13 @@ String targetMacAddress = ""; // 当前绑定的目标 MAC 地址
 // BLE 状态标志
 static boolean doConnect = false;
 static boolean connected = false;
-static boolean doScan = true; // 用于断线重连扫描控制
+static boolean doScan = false; // 用于断线重连扫描控制，只有绑定设备后才开启
 
 // 特征值指针与设备指针
 static BLERemoteCharacteristic* pRemoteCharacteristic; // 开关控制指针
 static BLERemoteCharacteristic* pBatteryCharacteristic; // 电池电量指针
 static BLEAdvertisedDevice* myDevice;
+static BLEClient* pClient = nullptr;
 
 // Web 与 BLE 之间的通信桥梁（-1 代表无动作，0 关灯，1 开灯）
 volatile int pendingAction = -1;
@@ -47,9 +50,43 @@ class MyClientCallback : public BLEClientCallbacks {
   }
   void onDisconnect(BLEClient* pclient) {
     connected = false;
+    pRemoteCharacteristic = nullptr;
+    pBatteryCharacteristic = nullptr;
     Serial.println("<<< 与 ZZK 断开连接，准备重新扫描...");
   }
 };
+
+static MyClientCallback clientCallback;
+
+void disconnectCurrentDevice() {
+    if (pClient != nullptr && pClient->isConnected()) {
+        pClient->disconnect();
+    }
+    connected = false;
+    pRemoteCharacteristic = nullptr;
+    pBatteryCharacteristic = nullptr;
+    zzkBattery = -1;
+}
+
+bool isValidMacAddress(String mac) {
+    mac.trim();
+    if (mac.length() != 17) {
+        return false;
+    }
+
+    for (int i = 0; i < 17; i++) {
+        char c = mac.charAt(i);
+        if ((i + 1) % 3 == 0) {
+            if (c != ':') {
+                return false;
+            }
+        } else if (!isxdigit(c)) {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 // ================= BLE 电池 Notify 回调函数 =================
 // 当墙上的 ZZK 电量发生变化并推送时，会瞬间触发这里
@@ -73,9 +110,22 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) {
     // 检查该设备是否广播了我们专属的 ZZK 服务 UUID
     if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(serviceUUID)) {
+      String scannedMac = advertisedDevice.getAddress().toString().c_str();
+      scannedMac.toLowerCase();
+      String boundMac = targetMacAddress;
+      boundMac.toLowerCase();
+
+      if (boundMac.length() == 0 || scannedMac != boundMac) {
+        return;
+      }
+
       BLEDevice::getScan()->stop(); // 扫到专属目标！立刻停止雷达扫描以节省资源
 
       // 保存找到的设备信息，留给主循环去发起连接
+      if (myDevice != nullptr) {
+        delete myDevice;
+        myDevice = nullptr;
+      }
       myDevice = new BLEAdvertisedDevice(advertisedDevice);
       doConnect = true;
       doScan = true; // 允许后续的断线重连逻辑
@@ -95,6 +145,10 @@ void setupWebServer() {
     server.on("/control", HTTP_GET, [](AsyncWebServerRequest *request){
         if (request->hasParam("action")) {
             String action = request->getParam("action")->value();
+            if (action != "0" && action != "1") {
+                request->send(400, "text/plain", "Invalid action");
+                return;
+            }
             pendingAction = action.toInt(); // 赋值给全局变量，交给主循环处理
             request->send(200, "text/plain", "OK");
         } else {
@@ -153,6 +207,12 @@ void setupWebServer() {
     server.on("/bind", HTTP_GET, [](AsyncWebServerRequest *request){
       if(request->hasParam("mac")) {
         String mac = request->getParam("mac")->value();
+        mac.trim();
+        if (!isValidMacAddress(mac)) {
+          request->send(400, "text/plain", "Invalid MAC");
+          return;
+        }
+
         Serial.printf("🔗 网页请求绑定新设备 MAC: %s\n", mac.c_str());
 
         // 写入内部 Flash 永久记忆
@@ -160,9 +220,8 @@ void setupWebServer() {
         targetMacAddress = mac; // 更新当前运行时的目标
 
         // 如果当前连着旧设备，立刻断开
-        if (connected) {
-           BLEDevice::createClient()->disconnect();
-        }
+        disconnectCurrentDevice();
+        doScan = true;
 
         request->send(200, "text/plain", "Bind Success");
       } else {
@@ -182,8 +241,17 @@ void setupWebServer() {
 // ================= 深入连接并获取特征值逻辑 =================
 bool connectToServer() {
     Serial.print("🔄 正在建立逻辑连接... ");
-    BLEClient* pClient = BLEDevice::createClient();
-    pClient->setClientCallbacks(new MyClientCallback());
+    if (myDevice == nullptr) {
+        Serial.println("没有可连接的目标设备。");
+        return false;
+    }
+
+    if (pClient == nullptr) {
+        pClient = BLEDevice::createClient();
+        pClient->setClientCallbacks(&clientCallback);
+    } else if (pClient->isConnected()) {
+        pClient->disconnect();
+    }
 
     if (!pClient->connect(myDevice)) {
         Serial.println("连接失败！");
@@ -233,19 +301,30 @@ void setup() {
 
     if(targetMacAddress == "") {
         Serial.println("⚠️ 当前未绑定任何 ZZK 设备，请通过网页扫描绑定！");
+        doScan = false;
     } else {
         Serial.printf("🎯 从记忆中读取到绑定的目标 MAC: %s\n", targetMacAddress.c_str());
+        doScan = true;
     }
 
     // 2. 连接 WiFi
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
     Serial.print("正在连接 WiFi");
-    while (WiFi.status() != WL_CONNECTED) {
+    unsigned long wifiStart = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < WIFI_CONNECT_TIMEOUT_MS) {
         delay(500); Serial.print(".");
     }
-    Serial.println("\n✅ WiFi 连接成功！请在浏览器中访问以下 IP 地址：");
-    Serial.println(WiFi.localIP());
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\n✅ WiFi 连接成功！请在浏览器中访问以下 IP 地址：");
+        Serial.println(WiFi.localIP());
+    } else {
+        Serial.println("\n⚠️ WiFi 连接超时，已启动临时 AP：CCJ-Gateway-Setup");
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP("CCJ-Gateway-Setup");
+        Serial.println(WiFi.softAPIP());
+    }
 
     // 3. 初始化蓝牙引擎并开启雷达扫描
     BLEDevice::init("CCJ_Gateway_Central");
@@ -266,6 +345,10 @@ void loop() {
     if (doConnect) {
         if (!connectToServer()) {
             Serial.println("连接流程异常终止，准备重新扫描...");
+        }
+        if (myDevice != nullptr) {
+            delete myDevice;
+            myDevice = nullptr;
         }
         doConnect = false;
     }

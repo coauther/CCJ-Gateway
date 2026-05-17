@@ -195,25 +195,49 @@ const char index_html[] PROGMEM = R"rawliteral(
 
           const list = document.getElementById('deviceList');
           if (data.length === 0) {
-            list.innerHTML = '<div style="text-align:center; color:#8e8e93; font-size:14px; padding:20px 0;">空气中极其安静，未发现设备</div>';
+            const empty = document.createElement('div');
+            empty.style.cssText = 'text-align:center; color:#8e8e93; font-size:14px; padding:20px 0;';
+            empty.textContent = '空气中极其安静，未发现设备';
+            list.appendChild(empty);
             return;
           }
 
-          let html = '';
           data.forEach((dev, index) => {
             let rssiColor = dev.rssi > -70 ? '#34c759' : (dev.rssi > -85 ? '#ff9500' : '#ff3b30');
-            html += `
-              <label class="device-item">
-                <div class="device-info">
-                  <span class="device-name">${dev.name}</span>
-                  <span class="device-mac">${dev.mac}</span>
-                  <span class="device-rssi" style="color: ${rssiColor}">信号: ${dev.rssi} dBm</span>
-                </div>
-                <input type="radio" name="macSelect" value="${dev.mac}" ${index === 0 ? 'checked' : ''} style="width:22px; height:22px; accent-color: #007aff;">
-              </label>
-            `;
+
+            const item = document.createElement('label');
+            item.className = 'device-item';
+
+            const info = document.createElement('div');
+            info.className = 'device-info';
+
+            const name = document.createElement('span');
+            name.className = 'device-name';
+            name.textContent = dev.name || 'ZZK_Switch (未命名)';
+
+            const mac = document.createElement('span');
+            mac.className = 'device-mac';
+            mac.textContent = dev.mac || '';
+
+            const rssi = document.createElement('span');
+            rssi.className = 'device-rssi';
+            rssi.style.color = rssiColor;
+            rssi.textContent = '信号: ' + dev.rssi + ' dBm';
+
+            const input = document.createElement('input');
+            input.type = 'radio';
+            input.name = 'macSelect';
+            input.value = dev.mac || '';
+            input.checked = index === 0;
+            input.style.cssText = 'width:22px; height:22px; accent-color: #007aff;';
+
+            info.appendChild(name);
+            info.appendChild(mac);
+            info.appendChild(rssi);
+            item.appendChild(info);
+            item.appendChild(input);
+            list.appendChild(item);
           });
-          list.innerHTML = html;
           document.getElementById('bindBtn').style.display = 'block';
         })
         .catch(err => {
@@ -226,7 +250,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     function bindDevice() {
       const selected = document.querySelector('input[name="macSelect"]:checked');
       if (!selected) return;
-      fetch('/bind?mac=' + selected.value)
+      fetch('/bind?mac=' + encodeURIComponent(selected.value))
         .then(response => {
           if (response.ok) {
             alert('🎉 网关已永久记忆该设备的 MAC 地址。');
