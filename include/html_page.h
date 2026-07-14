@@ -24,10 +24,17 @@ const char index_html[] PROGMEM = R"rawliteral(
     .battery-low { color: #ff3b30; } /* 低电量变红 */
     .battery-mid { color: #ff9500; } /* 中电量变橙 */
 
-    /* 高颜值拟物态 Toggle 按键 */
-    .toggle-btn { width: 130px; height: 130px; border-radius: 50%; border: none; background: #e5e5ea; color: #8e8e93; font-size: 18px; font-weight: 600; cursor: pointer; transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1); box-shadow: inset 0 0 15px rgba(0,0,0,0.05); display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 0 auto; -webkit-tap-highlight-color: transparent; outline: none; }
-    .toggle-btn.active { background: #ff9500; color: white; box-shadow: 0 15px 35px rgba(255, 149, 0, 0.4); }
-    .power-icon { font-size: 38px; margin-bottom: 8px; }
+    /* 独立的开灯与关灯指令按钮（不再假设网页知道灯的真实状态） */
+    .control-buttons { display: flex; justify-content: center; gap: 18px; }
+    .control-btn { width: 125px; height: 125px; border-radius: 50%; border: none; font-size: 17px; font-weight: 600; cursor: pointer; transition: transform 0.15s, box-shadow 0.2s, opacity 0.2s; display: flex; flex-direction: column; align-items: center; justify-content: center; -webkit-tap-highlight-color: transparent; outline: none; }
+    .control-btn:active { transform: scale(0.95); }
+    .control-btn:disabled { cursor: default; opacity: 0.55; }
+    .on-btn { background: #ff9500; color: white; box-shadow: 0 12px 28px rgba(255, 149, 0, 0.32); }
+    .off-btn { background: #e5e5ea; color: #3a3a3c; box-shadow: inset 0 0 15px rgba(0,0,0,0.05); }
+    .control-icon { font-size: 34px; margin-bottom: 8px; }
+    .control-status { min-height: 20px; margin-top: 18px; color: #8e8e93; font-size: 14px; font-weight: 500; }
+    .control-status.success { color: #34c759; }
+    .control-status.error { color: #ff3b30; }
 
     /* 底部设备管理入口 */
     .settings-link { margin-top: 40px; color: #007aff; font-size: 15px; font-weight: 500; cursor: pointer; padding: 10px; border-radius: 12px; transition: background 0.2s; }
@@ -71,11 +78,18 @@ const char index_html[] PROGMEM = R"rawliteral(
       </div>
     </div>
 
-    <!-- 开关区域 -->
-    <button class="toggle-btn" id="mainToggle" onclick="toggleLight()">
-      <div class="power-icon">⏻</div>
-      <span id="btnText">已关闭</span>
-    </button>
+    <!-- 独立的开灯与关灯指令区域 -->
+    <div class="control-buttons">
+      <button class="control-btn on-btn" onclick="sendLightCommand(1)" aria-label="开灯">
+        <span class="control-icon">☀</span>
+        <span>开灯</span>
+      </button>
+      <button class="control-btn off-btn" onclick="sendLightCommand(0)" aria-label="关灯">
+        <span class="control-icon">☾</span>
+        <span>关灯</span>
+      </button>
+    </div>
+    <div class="control-status" id="controlStatus">请选择操作</div>
 
     <div class="settings-link" onclick="openModal()">⚙️ 周边设备雷达扫描</div>
   </div>
@@ -140,33 +154,35 @@ const char index_html[] PROGMEM = R"rawliteral(
     setTimeout(fetchBattery, 1000);
 
 
-    // ================== 开关控制逻辑 ==================
-    let isLightOn = false;
+    // ================== 开灯/关灯指令逻辑 ==================
+    // 页面不保存或猜测灯的状态，每个按钮只发送一个明确动作。
+    let isSendingCommand = false;
 
-    function toggleLight() {
-      const btn = document.getElementById('mainToggle');
-      const text = document.getElementById('btnText');
+    function sendLightCommand(action) {
+      if (isSendingCommand) return;
+
+      const buttons = document.querySelectorAll('.control-btn');
+      const status = document.getElementById('controlStatus');
       if (navigator.vibrate) navigator.vibrate(50);
 
-      isLightOn = !isLightOn;
-      const action = isLightOn ? 1 : 0;
+      isSendingCommand = true;
+      buttons.forEach(button => button.disabled = true);
+      status.className = 'control-status';
+      status.innerText = action === 1 ? '正在发送开灯指令…' : '正在发送关灯指令…';
 
-      if (isLightOn) {
-        btn.classList.add('active');
-        text.innerText = '已开启';
-      } else {
-        btn.classList.remove('active');
-        text.innerText = '已关闭';
-      }
-
-      fetch('/control?action=' + action)
+      fetch('/control?action=' + action, { cache: 'no-store' })
         .then(response => {
           if (!response.ok) throw new Error('网关拒绝');
-        }).catch(err => {
-          alert('⚠️ 指令发送失败，请检查网络');
-          isLightOn = !isLightOn;
-          btn.classList.toggle('active');
-          text.innerText = isLightOn ? '已开启' : '已关闭';
+          status.className = 'control-status success';
+          status.innerText = action === 1 ? '✓ 开灯指令已发送至网关' : '✓ 关灯指令已发送至网关';
+        })
+        .catch(err => {
+          status.className = 'control-status error';
+          status.innerText = '⚠️ 指令发送失败，请检查网络';
+        })
+        .finally(() => {
+          isSendingCommand = false;
+          buttons.forEach(button => button.disabled = false);
         });
     }
 
