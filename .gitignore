@@ -4,3 +4,4 @@ include/README
 include/config.h
 test
 lib
+node_modules/
