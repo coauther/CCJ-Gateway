@@ -10,8 +10,8 @@ const char index_html[] PROGMEM = R"rawliteral(
   <title>CCJ Gateway</title>
   <style>
     /* 基础与苹果风排版 */
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f2f2f7; margin: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
-    .card { background: white; border-radius: 28px; padding: 35px 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); text-align: center; width: 85%; max-width: 360px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f2f2f7; margin: 0; padding: 24px 0; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; }
+    .card { box-sizing: border-box; background: white; border-radius: 28px; padding: 32px 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); text-align: center; width: calc(100% - 32px); max-width: 420px; }
 
     /* 顶部标题与电池排版 */
     .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 35px; }
@@ -26,7 +26,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
     /* 独立的开灯与关灯指令按钮（不再假设网页知道灯的真实状态） */
     .control-buttons { display: flex; justify-content: center; gap: 18px; }
-    .control-btn { width: 125px; height: 125px; border-radius: 50%; border: none; font-size: 17px; font-weight: 600; cursor: pointer; transition: transform 0.15s, box-shadow 0.2s, opacity 0.2s; display: flex; flex-direction: column; align-items: center; justify-content: center; -webkit-tap-highlight-color: transparent; outline: none; }
+    .control-btn { flex: 1; max-width: 125px; aspect-ratio: 1; border-radius: 50%; border: none; font-size: 17px; font-weight: 600; cursor: pointer; transition: transform 0.15s, box-shadow 0.2s, opacity 0.2s; display: flex; flex-direction: column; align-items: center; justify-content: center; -webkit-tap-highlight-color: transparent; outline: none; }
     .control-btn:active { transform: scale(0.95); }
     .control-btn:disabled { cursor: default; opacity: 0.55; }
     .on-btn { background: #ff9500; color: white; box-shadow: 0 12px 28px rgba(255, 149, 0, 0.32); }
@@ -37,13 +37,18 @@ const char index_html[] PROGMEM = R"rawliteral(
     .control-status.error { color: #ff3b30; }
 
     /* 底部设备管理入口 */
-    .settings-link { margin-top: 40px; color: #007aff; font-size: 15px; font-weight: 500; cursor: pointer; padding: 10px; border-radius: 12px; transition: background 0.2s; }
+    .settings-link { margin-top: 24px; color: #007aff; font-size: 15px; font-weight: 500; cursor: pointer; padding: 10px; border-radius: 12px; transition: background 0.2s; border: 0; background: transparent; }
     .settings-link:active { background: #e5e5ea; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .maintenance-panel { margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e5ea; text-align: left; }
+    .maintenance-title { font-size: 16px; font-weight: 600; color: #1c1c1e; }
+    .maintenance-copy { font-size: 13px; line-height: 1.6; color: #636366; margin: 8px 0; }
+    .connection-status { font-size: 14px; line-height: 1.5; color: #636366; margin: 0 0 16px; }
 
     /* 全屏毛玻璃弹窗 (扫描面板) */
     .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); align-items: center; justify-content: center; z-index: 999; opacity: 0; transition: opacity 0.3s; }
     .modal.show { display: flex; opacity: 1; }
-    .modal-content { background: white; border-radius: 24px; padding: 25px; width: 85%; max-width: 360px; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 40px rgba(0,0,0,0.2); }
+    .modal-content { box-sizing: border-box; background: white; border-radius: 24px; padding: 25px; width: calc(100% - 32px); max-width: 410px; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 40px rgba(0,0,0,0.2); }
     .modal-title { font-size: 20px; font-weight: 700; margin-bottom: 20px; color: #1c1c1e; }
 
     /* 设备列表样式 */
@@ -79,19 +84,27 @@ const char index_html[] PROGMEM = R"rawliteral(
     </div>
 
     <!-- 独立的开灯与关灯指令区域 -->
+    <div class="connection-status" id="connectionStatus" role="status">正在读取连接状态…</div>
     <div class="control-buttons">
-      <button class="control-btn on-btn" onclick="sendLightCommand(1)" aria-label="开灯">
+      <button class="control-btn on-btn" onclick="sendLightCommand(1)" aria-label="开灯" disabled>
         <span class="control-icon">☀</span>
         <span>开灯</span>
       </button>
-      <button class="control-btn off-btn" onclick="sendLightCommand(0)" aria-label="关灯">
+      <button class="control-btn off-btn" onclick="sendLightCommand(0)" aria-label="关灯" disabled>
         <span class="control-icon">☾</span>
         <span>关灯</span>
       </button>
     </div>
     <div class="control-status" id="controlStatus">请选择操作</div>
 
-    <div class="settings-link" onclick="openModal()">⚙️ 周边设备雷达扫描</div>
+    <div class="maintenance-panel">
+      <div class="maintenance-title">蓝牙固件升级</div>
+      <p class="maintenance-copy">临时释放连接 180 秒，让附近的电脑或手机连接开关烧录。绑定会保留，到时自动恢复。</p>
+      <p class="maintenance-copy" id="maintenanceStatus" role="status">正在读取状态…</p>
+      <button class="btn-secondary" id="releaseBtn" onclick="setMaintenance('release')" disabled>临时释放连接（180 秒）</button>
+      <button class="btn-primary" id="resumeBtn" onclick="setMaintenance('resume')" hidden>立即恢复连接</button>
+    </div>
+    <button class="settings-link" id="settingsBtn" onclick="openModal()" disabled>⚙️ 周边设备雷达扫描</button>
   </div>
 
   <!-- 雷达扫描与绑定弹窗 (保持不变) -->
@@ -107,6 +120,85 @@ const char index_html[] PROGMEM = R"rawliteral(
   </div>
 
   <script>
+    let gatewayStatus = null;
+    let statusAvailable = false;
+    let maintenanceRequestPending = false;
+    let statusRequestPending = false;
+    let statusRevision = 0;
+    let isSendingCommand = false;
+
+    function updateButtons() {
+      const blocked = !statusAvailable || !gatewayStatus || gatewayStatus.maintenance || maintenanceRequestPending;
+      document.querySelectorAll('.control-btn').forEach(button => {
+        button.disabled = blocked || !gatewayStatus.connected || isSendingCommand;
+      });
+      ['settingsBtn', 'scanBtn', 'bindBtn'].forEach(id => document.getElementById(id).disabled = blocked);
+      document.getElementById('releaseBtn').disabled = !statusAvailable || !gatewayStatus ||
+        !gatewayStatus.bound_mac || maintenanceRequestPending ||
+        ['releasing', 'resuming'].includes(gatewayStatus.maintenance_state);
+      document.getElementById('resumeBtn').disabled = !statusAvailable || maintenanceRequestPending ||
+        !gatewayStatus || ['releasing', 'resuming'].includes(gatewayStatus.maintenance_state);
+    }
+
+    function renderStatus(data) {
+      gatewayStatus = data;
+      statusAvailable = true;
+      const phase = data.maintenance_state;
+      document.getElementById('connectionStatus').textContent = data.maintenance ? '蓝牙维护中 · 灯控已暂停' :
+        data.connected ? '开关已连接' : data.bound_mac ? '正在连接已绑定开关…' : '尚未绑定开关';
+      document.getElementById('maintenanceStatus').textContent = phase === 'releasing' ? '正在释放连接，请等待倒计时开始后再烧录…' :
+        phase === 'active' ? '连接已释放，可开始烧录 · ' + data.remaining_seconds + ' 秒后自动恢复' :
+        phase === 'resuming' ? '正在恢复连接…' : data.bound_mac ? '正常连接模式' : '请先扫描并绑定开关';
+      document.getElementById('releaseBtn').textContent = phase === 'active' ? '延长至 180 秒' : '临时释放连接（180 秒）';
+      document.getElementById('resumeBtn').hidden = !data.maintenance;
+      updateBatteryUI(data.battery);
+      updateButtons();
+    }
+
+    async function fetchStatus() {
+      if (statusRequestPending || maintenanceRequestPending) return;
+      statusRequestPending = true;
+      const revision = statusRevision;
+      try {
+        const response = await fetch('/status', { cache: 'no-store' });
+        if (!response.ok) throw new Error('状态读取失败');
+        const data = await response.json();
+        if (revision === statusRevision) renderStatus(data);
+      } catch (err) {
+        if (revision === statusRevision) {
+          statusAvailable = false;
+          document.getElementById('connectionStatus').textContent = '无法连接网关，正在重试…';
+          document.getElementById('maintenanceStatus').textContent = '状态暂不可用，恢复网络后自动同步';
+          updateButtons();
+        }
+      } finally { statusRequestPending = false; }
+    }
+
+    async function setMaintenance(action) {
+      if (maintenanceRequestPending) return;
+      maintenanceRequestPending = true;
+      ++statusRevision; // Ignore a status poll started before this request.
+      updateButtons();
+      try {
+        const response = await fetch('/maintenance', {
+          method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'action=' + encodeURIComponent(action), cache: 'no-store'
+        });
+        if (!response.ok) throw new Error(response.status === 409 ? '请先绑定开关' : '操作失败，请重试');
+        renderStatus(await response.json());
+        document.getElementById('controlStatus').textContent = '请选择操作';
+        document.getElementById('controlStatus').className = 'control-status';
+      } catch (err) {
+        // A lost response may still have changed the gateway: wait for status.
+        statusAvailable = false;
+        document.getElementById('maintenanceStatus').textContent = err.message + '，正在同步状态…';
+      } finally {
+        maintenanceRequestPending = false;
+        updateButtons();
+        fetchStatus();
+      }
+    }
+
     // ================== 电量读取逻辑 ==================
     // 1. 手动点击刷新（加入时间戳，彻底粉碎浏览器缓存！）
     function fetchBattery() {
@@ -137,7 +229,7 @@ const char index_html[] PROGMEM = R"rawliteral(
       const badge = document.getElementById('batteryBadge');
       const text = document.getElementById('batteryText');
 
-      if (!isNaN(batteryVal)) {
+      if (!isNaN(batteryVal) && batteryVal >= 0 && batteryVal <= 100) {
         text.innerText = batteryVal + '%';
 
         // 苹果风色彩反馈
@@ -147,6 +239,9 @@ const char index_html[] PROGMEM = R"rawliteral(
         } else if (batteryVal <= 50) {
           badge.classList.add('battery-mid');
         }
+      } else {
+        text.innerText = '--%';
+        badge.classList.remove('battery-low', 'battery-mid');
       }
     }
 
@@ -156,10 +251,9 @@ const char index_html[] PROGMEM = R"rawliteral(
 
     // ================== 开灯/关灯指令逻辑 ==================
     // 页面不保存或猜测灯的状态，每个按钮只发送一个明确动作。
-    let isSendingCommand = false;
-
     function sendLightCommand(action) {
-      if (isSendingCommand) return;
+      if (isSendingCommand || !statusAvailable || !gatewayStatus || !gatewayStatus.connected ||
+          gatewayStatus.maintenance || maintenanceRequestPending) return;
 
       const buttons = document.querySelectorAll('.control-btn');
       const status = document.getElementById('controlStatus');
@@ -172,17 +266,19 @@ const char index_html[] PROGMEM = R"rawliteral(
 
       fetch('/control?action=' + action, { cache: 'no-store' })
         .then(response => {
-          if (!response.ok) throw new Error('网关拒绝');
+          if (!response.ok) throw new Error(response.status === 409 ? '维护期间无法控制开关' :
+            response.status === 503 ? '开关尚未连接' : '指令发送失败');
           status.className = 'control-status success';
           status.innerText = action === 1 ? '✓ 开灯指令已发送至网关' : '✓ 关灯指令已发送至网关';
         })
         .catch(err => {
           status.className = 'control-status error';
-          status.innerText = '⚠️ 指令发送失败，请检查网络';
+          status.innerText = '⚠️ ' + err.message;
+          fetchStatus();
         })
         .finally(() => {
           isSendingCommand = false;
-          buttons.forEach(button => button.disabled = false);
+          updateButtons();
         });
     }
 
@@ -202,8 +298,11 @@ const char index_html[] PROGMEM = R"rawliteral(
       document.getElementById('deviceList').innerHTML = '';
       document.getElementById('bindBtn').style.display = 'none';
 
-      fetch('/scan')
-        .then(response => response.json())
+      fetch('/scan', { cache: 'no-store' })
+        .then(response => {
+          if (!response.ok) throw new Error(response.status === 409 ? '蓝牙正在连接或维护中，请稍后重试' : '扫描失败');
+          return response.json();
+        })
         .then(data => {
           document.getElementById('loader').style.display = 'none';
           document.getElementById('scanBtn').style.display = 'block';
@@ -259,7 +358,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         .catch(err => {
           document.getElementById('loader').style.display = 'none';
           document.getElementById('scanBtn').style.display = 'block';
-          alert('🚨 扫描超时！请确保网关正常。');
+          alert(err.message);
         });
     }
 
@@ -271,11 +370,14 @@ const char index_html[] PROGMEM = R"rawliteral(
           if (response.ok) {
             alert('🎉 网关已永久记忆该设备的 MAC 地址。');
             closeModal();
+            fetchStatus();
           } else {
-            alert('⚠️ 绑定失败');
+            alert(response.status === 409 ? '蓝牙正在连接或维护中，请稍后重试' : '⚠️ 绑定失败');
           }
-        });
+        }).catch(() => alert('无法连接网关，请重试'));
     }
+    fetchStatus();
+    setInterval(fetchStatus, 1000);
   </script>
 </body>
 </html>
